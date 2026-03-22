@@ -1,0 +1,8 @@
+# 忽略虛擬環境
+venv/
+# 忽略環境變數 (你的 API Key 會放這)
+.env
+# 忽略本地資料庫 (兩台機器的 TODO 狀態先分開，避免 Git 衝突)
+*.db
+# Python 暫存檔
+__pycache__/ 
