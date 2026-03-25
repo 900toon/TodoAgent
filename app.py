@@ -6,6 +6,8 @@ import os
 from dotenv import load_dotenv
 from datetime import datetime
 import json
+from datetime import date # 記得確認最上方有 import 這個
+
 
 # 1. 載入環境變數與設定 Gemini
 load_dotenv()
@@ -52,46 +54,72 @@ def extract_tasks_from_text(user_input):
         st.error(f"解析失敗: {e}")
         return []
 
+
+
 # 4. Streamlit 介面
-st.title("🚀 Gemini AI TODO & 日記本")
+st.title("🚀 Gemini AI TODO & 日誌本")
 
-with st.expander("🗣️ 對 AI 說出你的計畫", expanded=True):
-    user_input = st.text_input("例如：幫我記下明天早上要寫趨勢OA，下午要看RTOS影片")
-    if st.button("讓 AI 幫我建立任務"):
-        if user_input:
-            tasks = extract_tasks_from_text(user_input)
-            today_str = datetime.now().strftime("%Y-%m-%d")
-            c = conn.cursor()
-            for t in tasks:
-                c.execute("INSERT INTO todos (date, task, status, log) VALUES (?, ?, ?, ?)", (today_str, t, False, ""))
-            conn.commit()
-            st.success(f"成功新增 {len(tasks)} 筆任務！")
-            st.rerun()
+# --- 區塊 A：日曆選擇器 ---
+# 預設顯示今天，並把選擇的日期轉成 YYYY-MM-DD 字串
+selected_date = st.date_input("📅 選擇你想查看或新增任務的日期", value=date.today())
+selected_date_str = selected_date.strftime("%Y-%m-%d")
 
-st.subheader("📋 今日任務清單與回顧")
-df = pd.read_sql_query("SELECT * FROM todos", conn)
+# --- 區塊 B：動態過濾的任務清單 ---
+st.subheader(f"📋 {selected_date_str} 的任務清單")
+
+# 從資料庫撈出資料 (此時 date 欄位還是字串)
+df = pd.read_sql_query("SELECT * FROM todos WHERE date = ?", conn, params=(selected_date_str,))
 
 if not df.empty:
+    # 【關鍵修復】把 Pandas DataFrame 裡的 date 欄位，從字串轉成真正的日期物件
+    df['date'] = pd.to_datetime(df['date']).dt.date
+
+    # 接下來再丟給 data_editor 就不會報錯了
     edited_df = st.data_editor(
         df,
         column_config={
             "id": None, 
-            "date": "日期",
+            "date": st.column_config.DateColumn("日期 (可點擊修改)", format="YYYY-MM-DD"),
             "task": "任務內容",
-            "status": st.column_config.CheckboxColumn("是否完成?", default=False),
-            "log": "日誌/成效回顧"
+            "status": st.column_config.CheckboxColumn("完成?", default=False),
+            "log": "日誌/成效"
         },
-        disabled=["date", "task"], 
+        disabled=["task"], 
         hide_index=True,
-        key="todo_editor"
+        key="todo_editor",
+        use_container_width=True
     )
+    
+    # ... 下面的儲存按鈕邏輯保持不變 ...
 
-    if st.button("💾 儲存今日進度與日誌"):
+    if st.button("💾 儲存變更 (包含日期修改)"):
         c = conn.cursor()
         for index, row in edited_df.iterrows():
-            c.execute("UPDATE todos SET status = ?, log = ? WHERE id = ?", 
-                      (int(row['status']), row['log'], row['id']))
+            # 確保寫回資料庫的日期是字串格式
+            new_date = str(row['date'])[:10] 
+            c.execute("UPDATE todos SET date = ?, status = ?, log = ? WHERE id = ?", 
+                      (new_date, int(row['status']), row['log'], row['id']))
         conn.commit()
-        st.success("進度與日誌已儲存！")
+        st.success("變更已儲存！")
+        st.rerun() # 存檔後重新整理，如果日期被改到其他天，該任務就會從今天的畫面消失
 else:
-    st.info("目前沒有任務，趕快對 AI 許願吧！")
+    st.info(f"這天 ({selected_date_str}) 目前沒有任務，請在下方建立！")
+
+# --- 區塊 C：聊天輸入框 ---
+# 提示字元跟著日期動態改變
+user_input = st.chat_input(f"請輸入 {selected_date_str} 的計畫 (例如：幫我記下下午要推導SVM...)")
+
+if user_input:
+    st.toast(f"🧠 AI 正在解析指令：{user_input}")
+    
+    tasks = extract_tasks_from_text(user_input)
+    
+    if tasks:
+        c = conn.cursor()
+        for t in tasks:
+            # 【關鍵修改】把任務塞進「你剛剛在日曆上選擇的日期」，而不是永遠塞進今天
+            c.execute("INSERT INTO todos (date, task, status, log) VALUES (?, ?, ?, ?)", (selected_date_str, t, False, ""))
+        conn.commit()
+        st.rerun() 
+    else:
+        st.error("AI 好像沒有抓到具體的任務，能換個說法嗎？")
